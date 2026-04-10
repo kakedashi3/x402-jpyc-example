@@ -1,8 +1,8 @@
 /**
- * JPYC x402 Client — Permit2 署名スキーム
- * 1. JPYC → Permit2 approve（未承認の場合のみ）
- * 2. Permit2 EIP-712 署名を生成（PermitTransferFrom）
- * 3. X-PAYMENT ヘッダーに入れてサーバーに送信
+ * JPYC x402 Client — EIP-3009 TransferWithAuthorization 署名スキーム
+ * 1. EIP-712 署名を生成（TransferWithAuthorization）
+ * 2. X-PAYMENT ヘッダーに入れてサーバーに送信
+ * ※ Permit2 の approve ステップは不要
  */
 import { config } from "dotenv";
 import { resolve, dirname } from "path";
@@ -10,10 +10,7 @@ import { fileURLToPath } from "url";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   createPublicClient,
-  createWalletClient,
   http,
-  parseAbi,
-  maxUint256,
 } from "viem";
 import { polygon } from "viem/chains";
 import { randomBytes } from "crypto";
@@ -23,7 +20,7 @@ config({ path: resolve(__dirname, "../.env") });
 
 const privateKey = (process.env.PRIVATE_KEY ?? process.env.EVM_PRIVATE_KEY) as `0x${string}`;
 if (!privateKey) {
-  console.error("Missing PRIVATE_KEY in clients/.env");
+  console.error("Missing PRIVATE_KEY in .env");
   process.exit(1);
 }
 
@@ -32,39 +29,36 @@ const baseURL = process.env.SERVER_URL || "http://localhost:4021";
 const url = `${baseURL}/weather`;
 
 const JPYC_ADDRESS = "0xe7c3d8c9a439fede00d2600032d5db0be71c3c29" as `0x${string}`;
-const PERMIT2_ADDRESS = "0x000000000022D473030F116dDEE9F6B43aC78BA3" as `0x${string}`;
-// ファシリテーターのリレーアドレス（Permit2のspender = 実際にpermitTransferFromを呼ぶアドレス）
-const FACILITATOR_RELAYER = "0x21c2AD63909Db11bcdc11Dc43d97EEfE01298a7D" as `0x${string}`;
 
-const ERC20_ABI = parseAbi([
-  "function allowance(address owner, address spender) view returns (uint256)",
-  "function approve(address spender, uint256 amount) returns (bool)",
-]);
+// EIP-3009 TransferWithAuthorization EIP-712 型定義
+const TRANSFER_WITH_AUTHORIZATION_TYPES = {
+  TransferWithAuthorization: [
+    { name: "from", type: "address" },
+    { name: "to", type: "address" },
+    { name: "value", type: "uint256" },
+    { name: "validAfter", type: "uint256" },
+    { name: "validBefore", type: "uint256" },
+    { name: "nonce", type: "bytes32" },
+  ],
+} as const;
 
-// Permit2 PermitTransferFrom EIP-712 型定義（witness なし）
-const PERMIT_TRANSFER_FROM_TYPES = {
-  PermitTransferFrom: [
-    { name: "permitted", type: "TokenPermissions" },
-    { name: "spender",   type: "address" },
-    { name: "nonce",     type: "uint256" },
-    { name: "deadline",  type: "uint256" },
-  ],
-  TokenPermissions: [
-    { name: "token",  type: "address" },
-    { name: "amount", type: "uint256" },
-  ],
+// JPYC の EIP-712 ドメイン
+const JPYC_DOMAIN = {
+  name: "JPY Coin",
+  version: "1",
+  chainId: 137,
+  verifyingContract: JPYC_ADDRESS,
 } as const;
 
 async function main(): Promise<void> {
   const account = privateKeyToAccount(privateKey);
   const publicClient = createPublicClient({ chain: polygon, transport: http(POLYGON_RPC) });
-  const walletClient = createWalletClient({ account, chain: polygon, transport: http(POLYGON_RPC) });
 
   console.log(`Wallet:  ${account.address}`);
   console.log(`Target:  ${url}`);
   console.log(`Network: eip155:137 (Polygon)`);
   console.log(`Token:   ${JPYC_ADDRESS} (JPYC)`);
-  console.log(`Flow:    Permit2 EIP-712 (PermitTransferFrom)\n`);
+  console.log(`Flow:    EIP-3009 TransferWithAuthorization\n`);
 
   // Step 1: 初回リクエスト → 402 を受け取り支払い先・金額を取得
   console.log("Step 1: Initial request (expect 402)...");
@@ -93,91 +87,55 @@ async function main(): Promise<void> {
   console.log(`payTo:   ${payTo}`);
   console.log(`amount:  ${amount} (raw JPYC units)`);
 
-  // Step 2: Permit2 へのJPYC approve チェック
-  console.log("\nStep 2: Checking JPYC allowance for Permit2...");
-  const allowance = await publicClient.readContract({
-    address: JPYC_ADDRESS,
-    abi: ERC20_ABI,
-    functionName: "allowance",
-    args: [account.address, PERMIT2_ADDRESS],
-  });
-  console.log(`Current allowance: ${allowance}`);
+  // Step 2: EIP-3009 TransferWithAuthorization EIP-712 署名を生成
+  console.log("\nStep 2: Generating EIP-3009 TransferWithAuthorization signature...");
 
-  if (allowance < BigInt(amount)) {
-    console.log("Approving Permit2 to spend JPYC (max uint256)...");
-    const approveTxHash = await walletClient.writeContract({
-      address: JPYC_ADDRESS,
-      abi: ERC20_ABI,
-      functionName: "approve",
-      args: [PERMIT2_ADDRESS, maxUint256],
-    });
-    console.log(`Approve txHash: ${approveTxHash}`);
-    await publicClient.waitForTransactionReceipt({ hash: approveTxHash });
-    console.log("Approved!");
-  } else {
-    console.log("Already approved, skipping.");
-  }
+  const nonce = `0x${randomBytes(32).toString("hex")}` as `0x${string}`;
+  const validAfter = 0n;
+  const validBefore = BigInt(Math.floor(Date.now() / 1000) + 3600);
 
-  // Step 3: Permit2 EIP-712 署名を生成
-  console.log("\nStep 3: Generating Permit2 EIP-712 signature...");
-
-  // ランダムな 256-bit nonce
-  const nonce = BigInt("0x" + randomBytes(32).toString("hex"));
-  // deadline = 現在時刻 + 1時間
-  const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
-
-  const permit2Domain = {
-    name: "Permit2",
-    chainId: 137,
-    verifyingContract: PERMIT2_ADDRESS,
-  } as const;
-
-  const permitMessage = {
-    permitted: {
-      token: JPYC_ADDRESS,
-      amount: BigInt(amount),
-    },
-    spender: FACILITATOR_RELAYER, // permitTransferFrom を呼ぶファシリテーターのアドレス
+  const message = {
+    from: account.address,
+    to: payTo as `0x${string}`,
+    value: BigInt(amount),
+    validAfter,
+    validBefore,
     nonce,
-    deadline,
   };
 
   const signature = await account.signTypedData({
-    domain: permit2Domain,
-    types: PERMIT_TRANSFER_FROM_TYPES,
-    primaryType: "PermitTransferFrom",
-    message: permitMessage,
+    domain: JPYC_DOMAIN,
+    types: TRANSFER_WITH_AUTHORIZATION_TYPES,
+    primaryType: "TransferWithAuthorization",
+    message,
   });
 
-  console.log(`Signature: ${signature.slice(0, 20)}...`);
-  console.log(`Nonce:     ${nonce}`);
-  console.log(`Deadline:  ${deadline} (unix)`);
+  console.log(`Signature:  ${signature.slice(0, 20)}...`);
+  console.log(`Nonce:      ${nonce.slice(0, 20)}...`);
+  console.log(`ValidAfter: ${validAfter}`);
+  console.log(`ValidBefore: ${validBefore} (unix)`);
 
-  // Step 4: paymentPayload を構築 (フラット構造)
+  // Step 3: paymentPayload を構築
+  // facilitator が期待する構造: { paymentPayload: { payload: { authorization: {...} } }, paymentRequirements: {...} }
+  // サーバーが paymentPayload でラップするため、ここでは payload.authorization を構築
   const paymentPayload = {
-    x402Version: 2,
-    scheme: "evm-erc20-permit2",
-    network: "eip155:137",
-    permit: {
-      permitted: {
-        token: JPYC_ADDRESS,
-        amount: amount,
+    payload: {
+      authorization: {
+        from: account.address,
+        to: payTo,
+        value: amount,
+        validAfter: validAfter.toString(),
+        validBefore: validBefore.toString(),
+        nonce,
+        signature,
       },
-      nonce: nonce.toString(),
-      deadline: deadline.toString(),
     },
-    transferDetails: {
-      to: payTo,
-      requestedAmount: amount,
-    },
-    owner: account.address,
-    signature,
   };
 
   const xPaymentHeader = Buffer.from(JSON.stringify(paymentPayload)).toString("base64");
 
-  // Step 5: X-PAYMENT ヘッダー付きでサーバーにリクエスト
-  console.log("\nStep 4: Sending Permit2 payment to server...");
+  // Step 4: X-PAYMENT ヘッダー付きでサーバーにリクエスト
+  console.log("\nStep 3: Sending EIP-3009 payment to server...");
   const response = await fetch(url, {
     method: "GET",
     headers: { "X-PAYMENT": xPaymentHeader },
@@ -194,7 +152,7 @@ async function main(): Promise<void> {
   console.log(body);
 
   if (response.status === 200) {
-    console.log("\n世界初のJPYC Permit2 x402決済成功！");
+    console.log("\nJPYC EIP-3009 x402決済成功！");
   }
 }
 
