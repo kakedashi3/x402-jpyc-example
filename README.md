@@ -11,7 +11,6 @@ via the x402 protocol on Polygon mainnet.
 
 - EVM wallet (e.g. MetaMask)
 - JPYC on Polygon mainnet (get it at [jpyc.co.jp](https://jpyc.co.jp))
-- A small amount of MATIC for gas (a few cents worth)
 - Node.js 18 or later
 
 ## Step by Step
@@ -26,11 +25,7 @@ via the x402 protocol on Polygon mainnet.
    - Symbol: JPYC
    - Decimals: 18
 
-### 2. Permit2 Approval (first time only)
-
-The client handles this automatically on first run. Permit2 approval is a one-time transaction that allows the x402 facilitator to move JPYC on your behalf using EIP-712 signatures — no gas is needed for subsequent payments.
-
-### 3. Set Environment Variables
+### 2. Set Environment Variables
 
 **Server side** — the wallet that will *receive* JPYC:
 
@@ -46,7 +41,7 @@ The client handles this automatically on first run. Permit2 approval is a one-ti
 
 > **Warning:** Never share or commit your private key. Add `.env` to `.gitignore`.
 
-### 4. Start the Server
+### 3. Start the Server
 
 ```bash
 cd server
@@ -56,7 +51,7 @@ npm run dev
 # → Server listening at http://localhost:4021
 ```
 
-### 5. Run the Client
+### 4. Run the Client
 
 ```bash
 cd client
@@ -78,7 +73,7 @@ Server
   │  2. 402 Payment Required
   ▼
 Client
-  │  3. Generate Permit2 EIP-712 signature (off-chain, no gas)
+  │  3. Generate EIP-3009 TransferWithAuthorization signature (off-chain, no gas)
   │  4. GET /weather with X-PAYMENT header
   ▼
 Server
@@ -86,7 +81,7 @@ Server
   │  5. POST /api/verify
   ▼
 x402-jpyc facilitator
-  │  6. Execute Permit2.permitTransferFrom on-chain
+  │  6. Execute transferWithAuthorization on-chain
   │  7. { isValid: true }
   ▼
 Server
@@ -110,9 +105,6 @@ Export the variable in the same terminal session before running:
 export EVM_ADDRESS=0x...
 ```
 
-**`Transaction failed` / `insufficient funds`**
-Your wallet may not have enough MATIC to cover gas. Send a small amount (≈0.01 MATIC) to your wallet on Polygon mainnet.
-
 ## Proof of First Transaction
 
 | Field | Value |
@@ -121,7 +113,7 @@ Your wallet may not have enough MATIC to cover gas. Send a small amount (≈0.01
 | txHash | [0x35c00930...](https://polygonscan.com/tx/0x35c00930d65a47dc00c86f686df9175ed1b1c4db731687acac2658e3432b8c8f) |
 | Block | 85338927 (Polygon mainnet) |
 | Token | [JPYC](https://polygonscan.com/token/0xe7c3d8c9a439fede00d2600032d5db0be71c3c29) |
-| Flow | evm-erc20-transfer (first) → Permit2 (current) |
+| Flow | evm-erc20-transfer (first) → EIP-3009 TransferWithAuthorization (current) |
 
 ---
 
@@ -138,7 +130,6 @@ x402プロトコルを使ってJPYC（日本円ステーブルコイン）でAPI
 
 - EVMウォレット（MetaMaskなど）
 - Polygon mainnet上のJPYC（取得方法: [jpyc.co.jp](https://jpyc.co.jp)）
-- ガス代用のMATIC（数円分）
 - Node.js 18以上
 
 ## 手順
@@ -153,11 +144,7 @@ x402プロトコルを使ってJPYC（日本円ステーブルコイン）でAPI
    - シンボル: JPYC
    - 小数点以下の桁数: 18
 
-### 2. Permit2のapprove（初回のみ）
-
-クライアントが初回実行時に自動でapproveします。これはx402ファシリテーターがJPYCを代理送金できるよう許可するための1回限りのトランザクションです。以降の決済はEIP-712署名のみでガス代がかかりません。
-
-### 3. 環境変数の設定
+### 2. 環境変数の設定
 
 **サーバー側** — JPYCを「受け取る」ウォレット：
 
@@ -173,7 +160,7 @@ x402プロトコルを使ってJPYC（日本円ステーブルコイン）でAPI
 
 > **警告:** 秘密鍵は絶対に公開・コミットしないこと。`.env` を `.gitignore` に追加してください。
 
-### 4. サーバーを起動する
+### 3. サーバーを起動する
 
 ```bash
 cd server
@@ -183,7 +170,7 @@ npm run dev
 # → Server listening at http://localhost:4021
 ```
 
-### 5. クライアントを実行する
+### 4. クライアントを実行する
 
 ```bash
 cd client
@@ -205,7 +192,7 @@ npx tsx jpyc.ts
   │  2. 402 Payment Required
   ▼
 クライアント
-  │  3. Permit2 EIP-712署名を生成（オフチェーン、ガス不要）
+  │  3. EIP-3009 TransferWithAuthorization署名を生成（オフチェーン、ガス不要）
   │  4. X-PAYMENTヘッダー付きでGET /weather
   ▼
 サーバー
@@ -213,7 +200,7 @@ npx tsx jpyc.ts
   │  5. POST /api/verify
   ▼
 x402-jpyc facilitator
-  │  6. Permit2.permitTransferFromをオンチェーンで実行
+  │  6. transferWithAuthorizationをオンチェーンで実行
   │  7. { isValid: true }
   ▼
 サーバー
@@ -237,9 +224,6 @@ kill $(lsof -t -i:4021)
 export EVM_ADDRESS=0x...
 ```
 
-**`Transaction failed` / `insufficient funds`**
-MATICのガス代が不足している可能性があります。Polygon mainnet上のウォレットに少量のMATIC（≈0.01 MATIC）を送金してください。
-
 ## 最初の取引の証明
 
 | 項目 | 値 |
@@ -248,4 +232,4 @@ MATICのガス代が不足している可能性があります。Polygon mainnet
 | txHash | [0x35c00930...](https://polygonscan.com/tx/0x35c00930d65a47dc00c86f686df9175ed1b1c4db731687acac2658e3432b8c8f) |
 | ブロック | 85338927 (Polygon mainnet) |
 | トークン | [JPYC](https://polygonscan.com/token/0xe7c3d8c9a439fede00d2600032d5db0be71c3c29) |
-| フロー | evm-erc20-transfer（初回）→ Permit2（現在） |
+| フロー | evm-erc20-transfer（初回）→ EIP-3009 TransferWithAuthorization（現在） |
