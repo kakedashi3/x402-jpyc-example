@@ -26,7 +26,7 @@ if (!privateKey) {
 
 const POLYGON_RPC = "https://polygon-bor-rpc.publicnode.com";
 const baseURL = process.env.SERVER_URL || "http://localhost:4021";
-const url = `${baseURL}/weather`;
+const url = `${baseURL}/api/v1/content/adding-jpyc-polygon-x402`;
 
 const JPYC_ADDRESS = "0xe7c3d8c9a439fede00d2600032d5db0be71c3c29" as `0x${string}`;
 
