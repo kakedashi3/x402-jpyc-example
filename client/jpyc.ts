@@ -1,34 +1,28 @@
 /**
  * JPYC x402 Client — EIP-3009 TransferWithAuthorization 署名スキーム
- * 1. EIP-712 署名を生成（TransferWithAuthorization）
- * 2. X-PAYMENT ヘッダーに入れてサーバーに送信
- * ※ Permit2 の approve ステップは不要
+ * 1. サーバーに GET → 402 を受け取り payTo・amount・token を取得
+ * 2. EIP-712 署名を生成（TransferWithAuthorization）
+ * 3. X-PAYMENT ヘッダーに入れて再リクエスト
  */
 import { config } from "dotenv";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { privateKeyToAccount } from "viem/accounts";
-import {
-  createPublicClient,
-  http,
-} from "viem";
+import { createPublicClient, http } from "viem";
 import { polygon } from "viem/chains";
 import { randomBytes } from "crypto";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 config({ path: resolve(__dirname, "../.env") });
 
-const privateKey = (process.env.PRIVATE_KEY ?? process.env.EVM_PRIVATE_KEY) as `0x${string}`;
+const privateKey = process.env.PRIVATE_KEY as `0x${string}`;
 if (!privateKey) {
   console.error("Missing PRIVATE_KEY in .env");
   process.exit(1);
 }
 
-const POLYGON_RPC = "https://polygon-bor-rpc.publicnode.com";
-const baseURL = process.env.SERVER_URL || "http://localhost:4021";
-const url = `${baseURL}/api/v1/content/adding-jpyc-polygon-x402`;
-
-const JPYC_ADDRESS = "0xe7c3d8c9a439fede00d2600032d5db0be71c3c29" as `0x${string}`;
+const baseURL = process.env.SERVER_URL || "http://localhost:3000";
+const url = `${baseURL}/api/premium`;
 
 // EIP-3009 TransferWithAuthorization EIP-712 型定義
 const TRANSFER_WITH_AUTHORIZATION_TYPES = {
@@ -42,27 +36,16 @@ const TRANSFER_WITH_AUTHORIZATION_TYPES = {
   ],
 } as const;
 
-// JPYC の EIP-712 ドメイン
-const JPYC_DOMAIN = {
-  name: "JPY Coin",
-  version: "1",
-  chainId: 137,
-  verifyingContract: JPYC_ADDRESS,
-} as const;
-
 async function main(): Promise<void> {
   const account = privateKeyToAccount(privateKey);
-  const publicClient = createPublicClient({ chain: polygon, transport: http(POLYGON_RPC) });
+  createPublicClient({ chain: polygon, transport: http() });
 
   console.log(`Wallet:  ${account.address}`);
   console.log(`Target:  ${url}`);
-  console.log(`Network: eip155:137 (Polygon)`);
-  console.log(`Token:   ${JPYC_ADDRESS} (JPYC)`);
-  console.log(`Flow:    EIP-3009 TransferWithAuthorization\n`);
 
-  // Step 1: 初回リクエスト → 402 を受け取り支払い先・金額を取得
-  console.log("Step 1: Initial request (expect 402)...");
-  const initRes = await fetch(url, { method: "GET" });
+  // Step 1: 初回リクエスト → 402 を受け取り支払い情報を取得
+  console.log("\nStep 1: Initial request (expect 402)...");
+  const initRes = await fetch(url);
   console.log(`Status: ${initRes.status}`);
 
   if (initRes.status !== 402) {
@@ -70,25 +53,35 @@ async function main(): Promise<void> {
     return;
   }
 
-  const paymentRequiredHeader = initRes.headers.get("payment-required");
-  let payTo = process.env.EVM_ADDRESS || "0xD111da39205E8DBb52621D12fef1f952C83890D2";
-  let amount = "1000";
+  const body402 = await initRes.json() as {
+    accepts: Array<{
+      payTo: string;
+      maxAmountRequired: string;
+      token: string;
+      network: string;
+    }>;
+  };
 
-  if (paymentRequiredHeader) {
-    try {
-      const decoded = JSON.parse(Buffer.from(paymentRequiredHeader, "base64").toString());
-      const accept = decoded.accepts?.[0];
-      if (accept?.payTo) payTo = accept.payTo;
-      if (accept?.amount) amount = accept.amount;
-    } catch {
-      console.warn("Could not parse payment-required header, using defaults");
-    }
+  const accept = body402.accepts?.[0];
+  if (!accept) {
+    console.error("No accepts in 402 response");
+    return;
   }
+
+  const { payTo, maxAmountRequired: amount, token } = accept;
   console.log(`payTo:   ${payTo}`);
-  console.log(`amount:  ${amount} (raw JPYC units)`);
+  console.log(`amount:  ${amount}`);
+  console.log(`token:   ${token}`);
 
   // Step 2: EIP-3009 TransferWithAuthorization EIP-712 署名を生成
-  console.log("\nStep 2: Generating EIP-3009 TransferWithAuthorization signature...");
+  console.log("\nStep 2: Generating EIP-3009 signature...");
+
+  const jpycDomain = {
+    name: "JPY Coin",
+    version: "1",
+    chainId: 137,
+    verifyingContract: token as `0x${string}`,
+  } as const;
 
   const nonce = `0x${randomBytes(32).toString("hex")}` as `0x${string}`;
   const validAfter = 0n;
@@ -104,20 +97,17 @@ async function main(): Promise<void> {
   };
 
   const signature = await account.signTypedData({
-    domain: JPYC_DOMAIN,
+    domain: jpycDomain,
     types: TRANSFER_WITH_AUTHORIZATION_TYPES,
     primaryType: "TransferWithAuthorization",
     message,
   });
 
-  console.log(`Signature:  ${signature.slice(0, 20)}...`);
-  console.log(`Nonce:      ${nonce.slice(0, 20)}...`);
-  console.log(`ValidAfter: ${validAfter}`);
+  console.log(`Signature:   ${signature.slice(0, 20)}...`);
+  console.log(`Nonce:       ${nonce.slice(0, 20)}...`);
   console.log(`ValidBefore: ${validBefore} (unix)`);
 
-  // Step 3: paymentPayload を構築
-  // facilitator が期待する構造: { paymentPayload: { payload: { authorization: {...} } }, paymentRequirements: {...} }
-  // サーバーが paymentPayload でラップするため、ここでは payload.authorization を構築
+  // Step 3: paymentPayload を構築して base64 エンコード
   const paymentPayload = {
     payload: {
       authorization: {
@@ -134,29 +124,24 @@ async function main(): Promise<void> {
 
   const xPaymentHeader = Buffer.from(JSON.stringify(paymentPayload)).toString("base64");
 
-  // Step 4: X-PAYMENT ヘッダー付きでサーバーにリクエスト
-  console.log("\nStep 3: Sending EIP-3009 payment to server...");
+  // Step 4: X-PAYMENT ヘッダー付きで再リクエスト
+  console.log("\nStep 3: Sending payment to server...");
   const response = await fetch(url, {
-    method: "GET",
     headers: { "X-PAYMENT": xPaymentHeader },
   });
 
   console.log("\n=== Status ===");
-  console.log("Status:", response.status);
-
-  console.log("\n=== Headers ===");
-  console.log(Object.fromEntries(response.headers));
+  console.log(response.status);
 
   console.log("\n=== Body ===");
-  const body = await response.text();
-  console.log(body);
+  console.log(await response.text());
 
   if (response.status === 200) {
-    console.log("\nJPYC EIP-3009 x402決済成功！");
+    console.log("\nJPYC x402 決済成功！");
   }
 }
 
-main().catch(error => {
+main().catch((error) => {
   console.error("\n=== Error ===");
   console.error(error?.message ?? error);
   process.exit(1);

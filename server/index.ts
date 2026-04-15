@@ -1,144 +1,157 @@
 import { config } from "dotenv";
 import express from "express";
-config();
+config({ path: "../.env" });
 
-const evmAddress = process.env.EVM_ADDRESS as `0x${string}`;
-if (!evmAddress) {
-  console.error("Missing required environment variable: EVM_ADDRESS");
+const X402_FACILITATOR_URL = process.env.X402_FACILITATOR_URL;
+const X402_API_KEY = process.env.X402_API_KEY;
+
+if (!X402_FACILITATOR_URL) {
+  console.error("Missing required environment variable: X402_FACILITATOR_URL");
+  process.exit(1);
+}
+if (!X402_API_KEY) {
+  console.error("Missing required environment variable: X402_API_KEY");
   process.exit(1);
 }
 
-const network = process.env.NETWORK || "eip155:137";
-const asset = process.env.ASSET || "0xe7c3d8c9a439fede00d2600032d5db0be71c3c29";
-const facilitatorUrl = process.env.FACILITATOR_URL || "https://x402-jpyc.vercel.app/api";
-const apiKey = "jpyc-test-key-20260410";
+// 起動時にファシリテーターから受取情報を取得
+let recipientAddress: string;
+let network: string;
+let token: string;
 
-const paymentRequirements = {
-  scheme: "evm-erc20-transfer",
-  network,
-  amount: "1000",
-  asset,
-  payTo: evmAddress,
-  maxTimeoutSeconds: 300,
-};
+async function fetchPaymentInfo(): Promise<void> {
+  const res = await fetch(`${X402_FACILITATOR_URL}/api/payment-info`, {
+    headers: { "X-API-Key": X402_API_KEY! },
+  });
+  if (!res.ok) throw new Error(`payment-info failed: ${res.status}`);
+  const data = await res.json() as {
+    recipientAddress: string;
+    network: string;
+    token: string;
+  };
+  recipientAddress = data.recipientAddress;
+  network = data.network;
+  token = data.token;
+  console.log(`payTo:   ${recipientAddress}`);
+  console.log(`network: ${network}`);
+  console.log(`token:   ${token}`);
+}
+
+const AMOUNT = "1000000"; // 1 JPYC (6 decimals)
 
 const app = express();
 
-// カスタム x402 ミドルウェア (evm-erc20-transfer スキーム)
-async function jpycPaymentMiddleware(
-  req: express.Request,
-  res: express.Response,
-  next: express.NextFunction,
-) {
-  const paymentHeader =
-    (req.headers["x-payment"] as string) || (req.headers["X-PAYMENT"] as string);
+// 有料エンドポイント
+app.get("/api/premium", async (req, res) => {
+  const xPayment = req.headers["x-payment"] as string | undefined;
 
-  if (!paymentHeader) {
-    // 402 を返してクライアントに支払い要件を通知
-    const paymentRequired = {
-      x402Version: 2,
-      error: "Payment required",
-      resource: {
-        url: `http://${req.headers.host}${req.path}`,
-        description: "Weather data",
-        mimeType: "application/json",
-      },
-      accepts: [paymentRequirements],
-    };
-    const encoded = Buffer.from(JSON.stringify(paymentRequired)).toString("base64");
-    res.setHeader("payment-required", encoded);
-    res.status(402).json({});
-    return;
-  }
-
-  // X-PAYMENT ヘッダーを Base64 デコード
-  let paymentPayload: any;
-  try {
-    paymentPayload = JSON.parse(Buffer.from(paymentHeader, "base64").toString());
-  } catch {
-    res.status(400).json({ error: "Invalid X-PAYMENT header" });
-    return;
-  }
-
-  console.log("[verify] payload:", JSON.stringify(paymentPayload, null, 2));
-
-  // ファシリテーターへ検証リクエスト
-  let verifyResult: any;
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 60000); // 60s timeout
-
-    let verifyRes: Response;
-    try {
-      verifyRes = await fetch(`${facilitatorUrl}/verify`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-API-Key": apiKey,
+  // 支払い情報がなければ 402 を返す
+  if (!xPayment) {
+    return res.status(402).json({
+      x402Version: 1,
+      accepts: [
+        {
+          scheme: "evm-erc20-transfer",
+          network,
+          maxAmountRequired: AMOUNT,
+          resource: `${req.protocol}://${req.get("host")}${req.originalUrl}`,
+          payTo: recipientAddress,
+          token,
+          facilitatorUrl: X402_FACILITATOR_URL,
         },
-        body: JSON.stringify(
-          paymentPayload.scheme === "evm-erc20-permit2"
-            ? {
-                permit: paymentPayload.permit,
-                transferDetails: paymentPayload.transferDetails,
-                owner: paymentPayload.owner,
-                signature: paymentPayload.signature,
-                paymentRequirements,
-              }
-            : {
-                paymentPayload,
-                paymentRequirements,
-              },
-        ),
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timeout);
-    }
+      ],
+    });
+  }
 
-    const text = await verifyRes.text();
-    console.log("[verify] response status:", verifyRes.status);
-    console.log("[verify] response body:", text);
+  // X-PAYMENT ヘッダーをデコード・検証
+  let paymentPayload: unknown;
+  try {
+    paymentPayload = JSON.parse(Buffer.from(xPayment, "base64").toString());
+  } catch {
+    return res.status(400).json({ error: "Invalid X-PAYMENT header: not valid base64 JSON" });
+  }
 
-    try {
-      verifyResult = JSON.parse(text);
-    } catch {
-      if (!res.headersSent) res.status(402).json({ error: `Facilitator error: ${text}` });
-      return;
-    }
+  const auth = (paymentPayload as any)?.payload?.authorization;
+  if (
+    !auth ||
+    typeof auth.from !== "string" ||
+    typeof auth.to !== "string" ||
+    typeof auth.value !== "string" ||
+    typeof auth.nonce !== "string" ||
+    typeof auth.signature !== "string"
+  ) {
+    return res.status(400).json({ error: "Invalid X-PAYMENT header: missing required fields" });
+  }
 
-    if (!verifyRes.ok) {
-      if (!res.headersSent) res.status(402).json({ error: verifyResult.error || "Verification failed" });
-      return;
-    }
+  const paymentRequirements = {
+    scheme: "evm-erc20-transfer",
+    network,
+    amount: AMOUNT,
+    asset: token,
+    payTo: recipientAddress,
+  };
+
+  // Step 1: verify
+  let verifyRes: Response;
+  try {
+    verifyRes = await fetch(`${X402_FACILITATOR_URL}/api/verify`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": X402_API_KEY!,
+      },
+      body: JSON.stringify({ paymentPayload, paymentRequirements }),
+    });
   } catch (e: any) {
     console.error("[verify] ERROR:", e?.message);
-    if (!res.headersSent) res.status(500).json({ error: `Facilitator unreachable: ${e?.message}` });
-    return;
+    return res.status(500).json({ error: `Facilitator unreachable: ${e?.message}` });
   }
 
-  if (!verifyResult.isValid) {
-    res.status(402).json({
-      error: verifyResult.invalidReason || verifyResult.error || "Invalid payment",
+  if (!verifyRes.ok) {
+    const err = await verifyRes.json().catch(() => ({})) as any;
+    console.error("[verify] FAILED:", err);
+    return res.status(402).json({ error: err.error || "Payment verification failed" });
+  }
+
+  console.log("[verify] OK");
+
+  // Step 2: settle（replay attack 防止）
+  let settleRes: Response;
+  try {
+    settleRes = await fetch(`${X402_FACILITATOR_URL}/api/settle`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": X402_API_KEY!,
+      },
+      body: JSON.stringify({ paymentPayload, paymentRequirements }),
     });
-    return;
+  } catch (e: any) {
+    console.error("[settle] ERROR:", e?.message);
+    return res.status(500).json({ error: `Settle failed: ${e?.message}` });
   }
 
-  console.log("[verify] Payment valid! Proceeding...");
-  next();
-}
+  if (!settleRes.ok) {
+    const err = await settleRes.json().catch(() => ({})) as any;
+    console.error("[settle] FAILED:", err);
+    return res.status(402).json({ error: err.error || "Payment settle failed" });
+  }
 
-app.get("/weather", jpycPaymentMiddleware, (req, res) => {
-  res.json({
-    report: {
-      weather: "sunny",
-      temperature: 70,
-    },
+  console.log("[settle] Payment consumed");
+
+  // 支払い確認・消費済み → コンテンツを返す
+  res.json({ data: "Premium content here" });
+});
+
+// 起動
+fetchPaymentInfo()
+  .then(() => {
+    app.listen(3000, () => {
+      console.log("Server listening at http://localhost:3000");
+      console.log(`Facilitator: ${X402_FACILITATOR_URL}`);
+    });
+  })
+  .catch((e) => {
+    console.error("Failed to fetch payment info:", e.message);
+    process.exit(1);
   });
-});
-
-app.listen(4021, () => {
-  console.log(`Server listening at http://localhost:4021`);
-  console.log(`Facilitator: ${facilitatorUrl}`);
-  console.log(`payTo: ${evmAddress}`);
-});
