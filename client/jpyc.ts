@@ -2,14 +2,12 @@
  * JPYC x402 Client — EIP-3009 TransferWithAuthorization 署名スキーム
  * 1. サーバーに GET → 402 を受け取り payTo・amount・token を取得
  * 2. EIP-712 署名を生成（TransferWithAuthorization）
- * 3. X-PAYMENT ヘッダーに入れて再リクエスト
+ * 3. PAYMENT-SIGNATURE ヘッダー（base64）に入れて再リクエスト
  */
 import { config } from "dotenv";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 import { privateKeyToAccount } from "viem/accounts";
-import { createPublicClient, http } from "viem";
-import { polygon } from "viem/chains";
 import { randomBytes } from "crypto";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -38,7 +36,6 @@ const TRANSFER_WITH_AUTHORIZATION_TYPES = {
 
 async function main(): Promise<void> {
   const account = privateKeyToAccount(privateKey);
-  createPublicClient({ chain: polygon, transport: http() });
 
   console.log(`Wallet:  ${account.address}`);
   console.log(`Target:  ${url}`);
@@ -53,12 +50,16 @@ async function main(): Promise<void> {
     return;
   }
 
-  const body402 = await initRes.json() as {
+  const body402 = (await initRes.json()) as {
+    x402Version?: number;
     accepts: Array<{
-      payTo: string;
-      maxAmountRequired: string;
-      token: string;
+      scheme: string;
       network: string;
+      asset: string;
+      amount?: string;
+      maxAmountRequired?: string;
+      payTo: string;
+      extra?: { name?: string; version?: string };
     }>;
   };
 
@@ -68,17 +69,33 @@ async function main(): Promise<void> {
     return;
   }
 
-  const { payTo, maxAmountRequired: amount, token } = accept;
-  console.log(`payTo:   ${payTo}`);
-  console.log(`amount:  ${amount}`);
-  console.log(`token:   ${token}`);
+  const {
+    payTo,
+    amount: amountV2,
+    maxAmountRequired: amountV1,
+    asset: token,
+    network,
+    extra,
+  } = accept;
+  const amount = amountV2 ?? amountV1;
+  if (!amount) {
+    console.error("402 response is missing amount / maxAmountRequired");
+    return;
+  }
+
+  console.log(`payTo:    ${payTo}`);
+  console.log(`amount:   ${amount}`);
+  console.log(`token:    ${token}`);
+  console.log(`network:  ${network}`);
 
   // Step 2: EIP-3009 TransferWithAuthorization EIP-712 署名を生成
   console.log("\nStep 2: Generating EIP-3009 signature...");
 
+  // EIP-712 domain: the server hints name/version via paymentRequirements.extra.
+  // Fall back to the canonical JPYC v2 values if not provided.
   const jpycDomain = {
-    name: "JPY Coin",
-    version: "1",
+    name: extra?.name ?? "JPY Coin",
+    version: extra?.version ?? "1",
     chainId: 137,
     verifyingContract: token as `0x${string}`,
   } as const;
@@ -107,9 +124,15 @@ async function main(): Promise<void> {
   console.log(`Nonce:       ${nonce.slice(0, 20)}...`);
   console.log(`ValidBefore: ${validBefore} (unix)`);
 
-  // Step 3: paymentPayload を構築して base64 エンコード
+  // Step 3: x402 v2 paymentPayload を構築
+  //   - signature は authorization の外（兄弟）に置く
+  //   - 最上位に x402Version / scheme / network を含める
   const paymentPayload = {
+    x402Version: 2,
+    scheme: "exact",
+    network,
     payload: {
+      signature,
       authorization: {
         from: account.address,
         to: payTo,
@@ -117,17 +140,18 @@ async function main(): Promise<void> {
         validAfter: validAfter.toString(),
         validBefore: validBefore.toString(),
         nonce,
-        signature,
       },
     },
   };
 
-  const xPaymentHeader = Buffer.from(JSON.stringify(paymentPayload)).toString("base64");
+  const paymentHeader = Buffer.from(JSON.stringify(paymentPayload)).toString(
+    "base64",
+  );
 
-  // Step 4: X-PAYMENT ヘッダー付きで再リクエスト
+  // Step 4: PAYMENT-SIGNATURE ヘッダー付きで再リクエスト
   console.log("\nStep 3: Sending payment to server...");
   const response = await fetch(url, {
-    headers: { "X-PAYMENT": xPaymentHeader },
+    headers: { "PAYMENT-SIGNATURE": paymentHeader },
   });
 
   console.log("\n=== Status ===");
@@ -135,6 +159,22 @@ async function main(): Promise<void> {
 
   console.log("\n=== Body ===");
   console.log(await response.text());
+
+  const settleHeader = response.headers.get("payment-response");
+  if (settleHeader) {
+    console.log("\n=== PAYMENT-RESPONSE ===");
+    try {
+      console.log(
+        JSON.stringify(
+          JSON.parse(Buffer.from(settleHeader, "base64").toString()),
+          null,
+          2,
+        ),
+      );
+    } catch {
+      console.log(settleHeader);
+    }
+  }
 
   if (response.status === 200) {
     console.log("\nJPYC x402 決済成功！");

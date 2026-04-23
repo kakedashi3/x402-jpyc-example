@@ -7,7 +7,7 @@ Reference implementation for JPYC payments using the [x402 protocol](https://x40
 A minimal working example of pay-per-request APIs using JPYC (Japanese Yen stablecoin) on Polygon.
 
 - **Server**: Returns a 402 response when payment is missing, verifies and settles payment via the facilitator
-- **Client**: Signs an EIP-3009 authorization and sends it in the `X-PAYMENT` header
+- **Client**: Signs an EIP-3009 authorization and sends it in the `PAYMENT-SIGNATURE` header (v2; `X-PAYMENT` is also accepted for backward compatibility)
 
 No gas fees required on the client side. The facilitator executes the on-chain transfer.
 
@@ -25,14 +25,15 @@ Client                        Server                        Facilitator
   │ [Sign EIP-3009 off-chain]    │                               │
   │                              │                               │
   │── GET /api/premium ─────────>│                               │
-  │   X-PAYMENT: <signed auth>   │── POST /api/verify ──────────>│
+  │   PAYMENT-SIGNATURE: <b64>   │── POST /verify ──────────────>│
   │                              │<─ 200 OK ─────────────────────│
   │                              │                               │
-  │                              │── POST /api/settle ──────────>│
+  │                              │── POST /settle ──────────────>│
   │                              │              [on-chain transfer executed]
   │                              │<─ 200 OK ─────────────────────│
   │                              │                               │
   │<─ 200 (content) ────────────│                               │
+  │   PAYMENT-RESPONSE: <b64>    │                               │
 ```
 
 ---
@@ -42,7 +43,7 @@ Client                        Server                        Facilitator
 - Node.js 18+
 - A wallet with JPYC on Polygon mainnet
   - Get JPYC at [jpyc.co.jp](https://jpyc.co.jp)
-  - Token contract: `0xe7c3d8c9a439fede00d2600032d5db0be71c3c29` (6 decimals)
+  - Token contract: `0xe7c3d8c9a439fede00d2600032d5db0be71c3c29` (18 decimals)
 - An API key from the x402-jpyc dashboard
   - Dashboard: [x402-jpyc.vercel.app/dashboard](https://x402-jpyc.vercel.app/dashboard)
   - Register your recipient wallet address when creating the key
@@ -110,9 +111,10 @@ Wallet:  0xD111...
 
 Step 1: Initial request (expect 402)...
 Status: 402
-payTo:   0x3f02...
-amount:  1000000
-token:   0xe7c3...
+payTo:    0x3f02...
+amount:   1000000000000000000
+token:    0xe7c3...
+network:  eip155:137
 
 Step 2: Generating EIP-3009 signature...
 Signature:   0x...
@@ -147,14 +149,14 @@ JPYC x402 決済成功！
 | Step | Who | What |
 |---|---|---|
 | 1 | Client → Server | `GET /api/premium` with no payment |
-| 2 | Server → Client | `402` with `payTo`, `amount`, `token` |
-| 3 | Client | Signs EIP-3009 `TransferWithAuthorization` off-chain (no gas) |
-| 4 | Client → Server | `GET /api/premium` with `X-PAYMENT` header (base64 encoded signed authorization) |
-| 5 | Server → Facilitator | `POST /api/verify` — checks signature validity and amount |
-| 6 | Server → Facilitator | `POST /api/settle` — executes on-chain `transferWithAuthorization`, marks nonce as used |
-| 7 | Server → Client | `200` with content |
+| 2 | Server → Client | `402` with `scheme: "exact"`, `network`, `asset`, `amount`, `payTo`, and `extra: { name: "JPY Coin", version: "1" }` |
+| 3 | Client | Signs EIP-3009 `TransferWithAuthorization` off-chain (no gas) using the EIP-712 domain from `extra` |
+| 4 | Client → Server | `GET /api/premium` with `PAYMENT-SIGNATURE` header (base64-encoded `paymentPayload`) |
+| 5 | Server → Facilitator | `POST /verify` — checks signature, nonce, expiry, and payTo match |
+| 6 | Server → Facilitator | `POST /settle` — executes on-chain `transferWithAuthorization` |
+| 7 | Server → Client | `200` with content and `PAYMENT-RESPONSE` header (base64 settle result) |
 
-**Replay attack prevention**: The nonce in each EIP-3009 authorization is random (32 bytes). After `settle`, the nonce is recorded on-chain and cannot be reused.
+**Replay attack prevention**: The nonce in each EIP-3009 authorization is random (32 bytes). After `settle`, the nonce is recorded on-chain and cannot be reused. The facilitator additionally claims the nonce in Upstash Redis before broadcasting, preventing TOCTOU races between concurrent settlement requests.
 
 ---
 
@@ -162,17 +164,17 @@ JPYC x402 決済成功！
 
 ### Change the price
 
-Edit `AMOUNT` in `server/index.ts`:
+Edit `AMOUNT` in `server/index.ts`. JPYC has 18 decimals, so amounts are in raw base units:
 
 ```ts
-const AMOUNT = "1000000"; // 1 JPYC (6 decimals)
+const AMOUNT = "1000000000000000000"; // 1 JPYC (18 decimals)
 ```
 
 | Value | JPYC |
 |---|---|
-| `100000` | 0.1 JPYC |
-| `1000000` | 1 JPYC |
-| `10000000` | 10 JPYC |
+| `100000000000000000` | 0.1 JPYC |
+| `1000000000000000000` | 1 JPYC |
+| `10000000000000000000` | 10 JPYC |
 
 ### Change the endpoint
 
@@ -182,7 +184,7 @@ Replace `/api/premium` with your own path and content in `server/index.ts`.
 
 ## Production Notes
 
-- **Use HTTPS**: The `X-PAYMENT` header contains a signed authorization. Always use TLS in production.
+- **Use HTTPS**: The `PAYMENT-SIGNATURE` header contains a signed authorization. Always use TLS in production.
 - **Private key management**: Never use a raw private key in production. Use a hardware wallet, HSM, or KMS.
 - **Rate limiting**: Per-API-key rate limiting is handled by the facilitator. Add IP-based rate limiting if needed.
 
@@ -230,7 +232,7 @@ kill $(lsof -t -i:3000)
 Polygon上のJPYC（日本円ステーブルコイン）でAPIの従量課金を実現する最小構成のサンプルです。
 
 - **サーバー**: 支払いがなければ402を返し、ファシリテーター経由で支払いを検証・確定する
-- **クライアント**: EIP-3009署名を生成し、`X-PAYMENT`ヘッダーに載せて送信する
+- **クライアント**: EIP-3009署名を生成し、`PAYMENT-SIGNATURE` ヘッダー（v2）に載せて送信する（互換のため `X-PAYMENT` も受理）
 
 クライアント側にガス代は不要。オンチェーン送金はファシリテーターが代行します。
 
@@ -248,14 +250,15 @@ Polygon上のJPYC（日本円ステーブルコイン）でAPIの従量課金を
   │ [EIP-3009署名をオフチェーンで生成]                           │
   │                              │                               │
   │── GET /api/premium ─────────>│                               │
-  │   X-PAYMENT: <署名済み認可>  │── POST /api/verify ──────────>│
+  │   PAYMENT-SIGNATURE: <b64>   │── POST /verify ──────────────>│
   │                              │<─ 200 OK ─────────────────────│
   │                              │                               │
-  │                              │── POST /api/settle ──────────>│
+  │                              │── POST /settle ──────────────>│
   │                              │              [オンチェーン送金を実行]
   │                              │<─ 200 OK ─────────────────────│
   │                              │                               │
   │<─ 200 (コンテンツ) ─────────│                               │
+  │   PAYMENT-RESPONSE: <b64>    │                               │
 ```
 
 ---
@@ -265,7 +268,7 @@ Polygon上のJPYC（日本円ステーブルコイン）でAPIの従量課金を
 - Node.js 18以上
 - Polygon mainnet上にJPYCを持つウォレット
   - JPYCの購入: [jpyc.co.jp](https://jpyc.co.jp)
-  - トークンコントラクト: `0xe7c3d8c9a439fede00d2600032d5db0be71c3c29`（小数点6桁）
+  - トークンコントラクト: `0xe7c3d8c9a439fede00d2600032d5db0be71c3c29`（小数点18桁）
 - x402-jpycダッシュボードで発行したAPIキー
   - ダッシュボード: [x402-jpyc.vercel.app/dashboard](https://x402-jpyc.vercel.app/dashboard)
   - キー作成時に受取ウォレットアドレスを登録してください
@@ -329,8 +332,9 @@ npm start
 
 ```
 Step 1: 402を受信...
-payTo:   0x3f02...
-amount:  1000000
+payTo:    0x3f02...
+amount:   1000000000000000000
+network:  eip155:137
 
 Step 2: EIP-3009署名を生成...
 
@@ -359,14 +363,14 @@ JPYC x402 決済成功！
 | ステップ | 誰が | 何をするか |
 |---|---|---|
 | 1 | クライアント → サーバー | 支払いなしで `GET /api/premium` |
-| 2 | サーバー → クライアント | `402` で `payTo`・`amount`・`token` を通知 |
-| 3 | クライアント | EIP-3009 `TransferWithAuthorization` をオフチェーンで署名（ガス不要） |
-| 4 | クライアント → サーバー | `X-PAYMENT` ヘッダー付きで `GET /api/premium` |
-| 5 | サーバー → ファシリテーター | `POST /api/verify` — 署名と金額を検証 |
-| 6 | サーバー → ファシリテーター | `POST /api/settle` — オンチェーンで `transferWithAuthorization` を実行、nonceを使用済みに |
-| 7 | サーバー → クライアント | `200` でコンテンツを返す |
+| 2 | サーバー → クライアント | `402` で `scheme: "exact"`・`network`・`asset`・`amount`・`payTo`・`extra: { name: "JPY Coin", version: "1" }` を通知 |
+| 3 | クライアント | `extra` の EIP-712 domain を使って `TransferWithAuthorization` をオフチェーンで署名（ガス不要） |
+| 4 | クライアント → サーバー | `PAYMENT-SIGNATURE` ヘッダー（base64）付きで `GET /api/premium` |
+| 5 | サーバー → ファシリテーター | `POST /verify` — 署名・nonce・有効期限・payTo 一致を検証 |
+| 6 | サーバー → ファシリテーター | `POST /settle` — オンチェーンで `transferWithAuthorization` を実行 |
+| 7 | サーバー → クライアント | `200` でコンテンツを返す（`PAYMENT-RESPONSE` ヘッダーに base64 で settle 結果を同梱） |
 
-**リプレイアタック対策**: EIP-3009認可のnonceはランダム32バイトです。settle後にnonceがオンチェーンに記録され、同じ署名の使い回しができません。
+**リプレイアタック対策**: EIP-3009認可のnonceはランダム32バイトです。settle後にnonceがオンチェーンに記録され、同じ署名の使い回しができません。ファシリテーターはブロードキャスト前に Upstash Redis でも nonce を claim するため、同時 settle 呼び出しの TOCTOU レースも防止されます。
 
 ---
 
@@ -374,17 +378,17 @@ JPYC x402 決済成功！
 
 ### 価格を変更する
 
-`server/index.ts` の `AMOUNT` を編集：
+`server/index.ts` の `AMOUNT` を編集。JPYC は小数点18桁なので、値は raw 単位で指定します：
 
 ```ts
-const AMOUNT = "1000000"; // 1 JPYC（小数点6桁）
+const AMOUNT = "1000000000000000000"; // 1 JPYC（小数点18桁）
 ```
 
 | 値 | JPYC |
 |---|---|
-| `100000` | 0.1 JPYC |
-| `1000000` | 1 JPYC |
-| `10000000` | 10 JPYC |
+| `100000000000000000` | 0.1 JPYC |
+| `1000000000000000000` | 1 JPYC |
+| `10000000000000000000` | 10 JPYC |
 
 ### エンドポイントを変更する
 
@@ -394,7 +398,7 @@ const AMOUNT = "1000000"; // 1 JPYC（小数点6桁）
 
 ## 本番運用時の注意
 
-- **HTTPSを使用すること**: `X-PAYMENT` ヘッダーには署名済み認可が含まれます。本番環境では必ずTLSを使用してください。
+- **HTTPSを使用すること**: `PAYMENT-SIGNATURE` ヘッダーには署名済み認可が含まれます。本番環境では必ずTLSを使用してください。
 - **秘密鍵の管理**: 本番環境では生の秘密鍵を使わないこと。ハードウェアウォレット・HSM・KMSを使用してください。
 - **レートリミット**: APIキー単位のレートリミットはファシリテーター側で管理されます。IP単位の制限が必要な場合はサーバー側に追加してください。
 
