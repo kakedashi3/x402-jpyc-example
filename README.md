@@ -45,7 +45,7 @@ Client                        Server                        Facilitator
   - Get JPYC at [jpyc.co.jp](https://jpyc.co.jp)
   - Token contract: `0xe7c3d8c9a439fede00d2600032d5db0be71c3c29` (18 decimals)
 - An API key from the x402-jpyc dashboard
-  - Dashboard: [yen402.com/dashboard](https://yen402.com/dashboard)
+  - Dashboard: [dashboard.yen402.com](https://dashboard.yen402.com)
   - Register your recipient wallet address when creating the key
 
 ---
@@ -270,7 +270,7 @@ Polygon上のJPYC（日本円ステーブルコイン）でAPIの従量課金を
   - JPYCの購入: [jpyc.co.jp](https://jpyc.co.jp)
   - トークンコントラクト: `0xe7c3d8c9a439fede00d2600032d5db0be71c3c29`（小数点18桁）
 - x402-jpycダッシュボードで発行したAPIキー
-  - ダッシュボード: [yen402.com/dashboard](https://yen402.com/dashboard)
+  - ダッシュボード: [dashboard.yen402.com](https://dashboard.yen402.com)
   - キー作成時に受取ウォレットアドレスを登録してください
 
 ---
