@@ -431,3 +431,15 @@ kill $(lsof -t -i:3000)
 | txHash | [0x35c00930...](https://polygonscan.com/tx/0x35c00930d65a47dc00c86f686df9175ed1b1c4db731687acac2658e3432b8c8f) |
 | ブロック | 85338927 (Polygon mainnet) |
 | トークン | [JPYC](https://polygonscan.com/token/0xe7c3d8c9a439fede00d2600032d5db0be71c3c29) |
+
+---
+
+## Disclaimer / 免責事項
+
+> This project is an unofficial, individually-developed open source project. It is not an official content of JPYC Inc.
+> "JPYC" is a stablecoin provided by JPYC Inc.
+> "JPYC" and the JPYC logo are registered trademarks of JPYC Inc.
+>
+> ※ 本プロジェクトは個人開発による非公式のオープンソースプロジェクトです。JPYC 株式会社による公式コンテンツではありません。
+> ※ 「JPYC」は JPYC 株式会社の提供するステーブルコインです。
+> ※ JPYC 及び JPYC ロゴは、JPYC 株式会社の登録商標です。
