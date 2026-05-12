@@ -45,7 +45,7 @@ Client                        Server                        Facilitator
   - Get JPYC at [jpyc.co.jp](https://jpyc.co.jp)
   - Token contract: `0xe7c3d8c9a439fede00d2600032d5db0be71c3c29` (18 decimals)
 - An API key from the x402-jpyc dashboard
-  - Dashboard: [x402-jpyc.vercel.app/dashboard](https://x402-jpyc.vercel.app/dashboard)
+  - Dashboard: [yen402.com/dashboard](https://yen402.com/dashboard)
   - Register your recipient wallet address when creating the key
 
 ---
@@ -138,7 +138,7 @@ JPYC x402 決済成功！
 | Variable | Required | Description |
 |---|---|---|
 | `X402_API_KEY` | ✅ Server | API key from the dashboard. The recipient address is registered to this key. |
-| `X402_FACILITATOR_URL` | — | Facilitator URL. Defaults to `https://x402-jpyc.vercel.app` |
+| `X402_FACILITATOR_URL` | — | Facilitator URL. Defaults to `https://yen402.com` |
 | `PRIVATE_KEY` | ✅ Client | Private key of the wallet paying with JPYC |
 | `SERVER_URL` | — | Server URL for the client. Defaults to `http://localhost:3000` |
 
@@ -270,7 +270,7 @@ Polygon上のJPYC（日本円ステーブルコイン）でAPIの従量課金を
   - JPYCの購入: [jpyc.co.jp](https://jpyc.co.jp)
   - トークンコントラクト: `0xe7c3d8c9a439fede00d2600032d5db0be71c3c29`（小数点18桁）
 - x402-jpycダッシュボードで発行したAPIキー
-  - ダッシュボード: [x402-jpyc.vercel.app/dashboard](https://x402-jpyc.vercel.app/dashboard)
+  - ダッシュボード: [yen402.com/dashboard](https://yen402.com/dashboard)
   - キー作成時に受取ウォレットアドレスを登録してください
 
 ---
