@@ -67,8 +67,10 @@ app.get("/api/premium", async (req, res) => {
 
   // 支払い情報がなければ 402 を返す
   if (!rawPayment) {
-    return res.status(402).json({
-      x402Version: 2,
+    // yen402 facilitator expects v1 paymentPayload shape (scheme at top level),
+    // so advertise x402Version:1 in the envelope to make yen402-mcp emit v1 payloads.
+    const envelope = {
+      x402Version: 1,
       accepts: [
         {
           ...paymentRequirements,
@@ -76,7 +78,15 @@ app.get("/api/premium", async (req, res) => {
           resource: `${req.protocol}://${req.get("host")}${req.originalUrl}`,
         },
       ],
-    });
+    };
+    // Body + base64 `payment-required` header: dual delivery to maximize compat
+    // with both body-parsing clients (mameta EC style) and header-parsing
+    // clients (paylog.dev / yen402-mcp). The header carries the same envelope.
+    res.setHeader(
+      "payment-required",
+      Buffer.from(JSON.stringify(envelope)).toString("base64"),
+    );
+    return res.status(402).json(envelope);
   }
 
   // PAYMENT-SIGNATURE / X-PAYMENT は base64(JSON) で paymentPayload を運ぶ
@@ -175,8 +185,9 @@ app.get("/api/premium", async (req, res) => {
 // 起動
 fetchPaymentInfo()
   .then(() => {
-    app.listen(3000, () => {
-      console.log("Server listening at http://localhost:3000");
+    const PORT = Number(process.env.PORT) || 3000;
+    app.listen(PORT, () => {
+      console.log(`Server listening at http://localhost:${PORT}`);
       console.log(`Facilitator: ${X402_FACILITATOR_URL}`);
     });
   })
