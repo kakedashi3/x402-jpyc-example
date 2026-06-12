@@ -240,15 +240,22 @@ app.get("/api/markets", async (req, res) => {
   }
   if (!upstream.searchParams.has("limit")) upstream.searchParams.set("limit", "5");
 
+  await forwardJson(res, upstream);
+});
+
+/**
+ * 上流 GET 転送の共通部。
+ * 支払い済みなのに上流が落ちている場合も 200 で返さない (決済は完了している
+ * ため、agent 側が PAYMENT-RESPONSE の tx_hash で問い合わせできるよう明示)。
+ */
+async function forwardJson(res: Response, upstream: URL): Promise<void> {
   try {
     const r = await fetch(upstream, {
       headers: { Accept: "application/json" },
       signal: AbortSignal.timeout(15_000),
     });
     const body = await r.json();
-    console.log(`[forward] ${upstream.pathname}?${upstream.searchParams} → ${r.status}`);
-    // 支払い済みなのに上流が落ちている場合も 200 で返さない (決済は完了している
-    // ため、agent 側が PAYMENT-RESPONSE の tx_hash で問い合わせできるよう明示)
+    console.log(`[forward] ${upstream.host}${upstream.pathname}?${upstream.searchParams} → ${r.status}`);
     res.status(r.ok ? 200 : 502).json(
       r.ok ? body : { error: `Upstream error: ${r.status}`, upstream_body: body },
     );
@@ -256,6 +263,85 @@ app.get("/api/markets", async (req, res) => {
     console.error("[forward] ERROR:", e?.message);
     res.status(502).json({ error: `Upstream unreachable: ${e?.message}` });
   }
+}
+
+// ─────────────────────────────────────────────────────────────
+// 多 endpoint 化 (jojo Phase G / knowledge jojo.md §14、blockrun §7)
+// 選定基準: 無料 API 優先 (原価ゼロ・粗利 100%)・read 系のみ・上流データの権利クリーン度。
+// ─────────────────────────────────────────────────────────────
+
+// /api/fx — 為替レート (Frankfurter、ECB 公表レートのオープンデータ・key 不要)
+// 税込 5.5 JPYC = 税抜 5 + 消費税 0.5 — 税額が 1 円を割るマイクロペイメント帯のケース (blockrun §6)
+const FX_AMOUNT = "5500000000000000000";
+const FX_TAX = { excl_jpyc: "5", vat_jpyc: "0.5", rate: 0.1 };
+const UPSTREAM_FX = "https://api.frankfurter.dev/v1/latest";
+const FX_PARAM_ALLOWLIST = ["base", "symbols"] as const;
+
+app.get("/api/fx", async (req, res) => {
+  const paid = await collectPayment(req, res, {
+    amount: FX_AMOUNT,
+    jp402: { tax: FX_TAX, upstream: "frankfurter-ecb" },
+  });
+  if (!paid) return;
+
+  const upstream = new URL(UPSTREAM_FX);
+  for (const k of FX_PARAM_ALLOWLIST) {
+    const v = req.query[k];
+    if (typeof v === "string") upstream.searchParams.set(k, v);
+  }
+  if (!upstream.searchParams.has("symbols")) upstream.searchParams.set("symbols", "JPY,EUR,GBP");
+  await forwardJson(res, upstream);
+});
+
+// /api/defi — チェーン別 DeFi TVL (DeFiLlama 公開 API・key 不要)
+// 税込 11 JPYC = 税抜 10 + 消費税 1 (10%)
+const DEFI_AMOUNT = "11000000000000000000";
+const DEFI_TAX = { excl_jpyc: "10", vat_jpyc: "1", rate: 0.1 };
+const UPSTREAM_DEFI = "https://api.llama.fi/v2/chains";
+
+app.get("/api/defi", async (req, res) => {
+  const paid = await collectPayment(req, res, {
+    amount: DEFI_AMOUNT,
+    jp402: { tax: DEFI_TAX, upstream: "defillama" },
+  });
+  if (!paid) return;
+
+  // 上流はパラメータなしで全チェーン返却。limit だけローカルで TVL 降順 top N に絞る
+  try {
+    const r = await fetch(UPSTREAM_DEFI, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      res.status(502).json({ error: `Upstream error: ${r.status}`, upstream_body: body });
+      return;
+    }
+    const chains = (await r.json()) as Array<{ tvl: number }>;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 50);
+    const body = [...chains].sort((a, b) => (b.tvl ?? 0) - (a.tvl ?? 0)).slice(0, limit);
+    console.log(`[forward] api.llama.fi/v2/chains (top ${limit}) → 200`);
+    res.json(body);
+  } catch (e: any) {
+    console.error("[forward] ERROR:", e?.message);
+    res.status(502).json({ error: `Upstream unreachable: ${e?.message}` });
+  }
+});
+
+// /api/catalog — 無料の品書き。買い手 agent (jojo 等) が品揃えと価格を発見する用。
+// 正式な discovery は jp402-registry 登録 (jojo Phase D) でこの簡易版を置き換える
+app.get("/api/catalog", (_req, res) => {
+  res.json({
+    seller: "x402-jpyc-example (jojo demo)",
+    currency: "JPYC",
+    network: "eip155:137",
+    resources: [
+      { path: "/api/premium", price_jpyc: "1", description: "デモ用固定コンテンツ" },
+      { path: "/api/markets", price_jpyc: "11", tax: MARKETS_TAX, upstream: "polymarket-gamma", params: MARKETS_PARAM_ALLOWLIST, description: "Polymarket 予測市場データ" },
+      { path: "/api/fx", price_jpyc: "5.5", tax: FX_TAX, upstream: "frankfurter-ecb", params: FX_PARAM_ALLOWLIST, description: "ECB 公表為替レート" },
+      { path: "/api/defi", price_jpyc: "11", tax: DEFI_TAX, upstream: "defillama", params: ["limit"], description: "チェーン別 DeFi TVL (降順 top N)" },
+    ],
+  });
 });
 
 // 起動
@@ -265,7 +351,8 @@ fetchPaymentInfo()
     app.listen(PORT, () => {
       console.log(`Server listening at http://localhost:${PORT}`);
       console.log(`Facilitator: ${X402_FACILITATOR_URL}`);
-      console.log(`Paid routes: /api/premium (1 JPYC), /api/markets (11 JPYC 税込)`);
+      console.log(`Paid routes: /api/premium (1 JPYC), /api/markets (11 JPYC 税込), /api/fx (5.5 JPYC 税込), /api/defi (11 JPYC 税込)`);
+      console.log(`Free routes: /api/catalog (品書き)`);
     });
   })
   .catch((e) => {
