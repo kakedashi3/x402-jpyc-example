@@ -16,9 +16,12 @@ if (!X402_API_KEY) {
 }
 
 // x402-jpyc enforces these values on every /verify and /settle call.
-// scheme, network, and extra.name/version must match the JPYC v2 EIP-712 domain.
+// scheme, network, and extra.name/version must match the EIP-712 domain of the
+// current JPYC contract (電子決済手段, 0xe7c3d8c9a439fede00d2600032d5db0be71c3c29
+// — same address on Polygon/Kaia). The actual token address comes from the
+// facilitator's /payment-info at startup; only the domain values are fixed here.
 const JPYC_SCHEME = "exact" as const;
-const JPYC_EIP712_NAME = "JPY Coin" as const; // canonical EIP-712 name on the JPYC v2 contract
+const JPYC_EIP712_NAME = "JPY Coin" as const; // canonical EIP-712 name on the JPYC contract
 const JPYC_EIP712_VERSION = "1" as const;
 
 // 起動時にファシリテーターから受取情報を取得
@@ -44,7 +47,7 @@ async function fetchPaymentInfo(): Promise<void> {
   console.log(`token:   ${token}`);
 }
 
-// JPYC v2 on Polygon has 18 decimals. 1 JPYC = 10^18 raw units.
+// JPYC on Polygon has 18 decimals. 1 JPYC = 10^18 raw units.
 const AMOUNT = "1000000000000000000"; // 1 JPYC
 
 /**

@@ -92,7 +92,7 @@ async function main(): Promise<void> {
   console.log("\nStep 2: Generating EIP-3009 signature...");
 
   // EIP-712 domain: the server hints name/version via paymentRequirements.extra.
-  // Fall back to the canonical JPYC v2 values if not provided.
+  // Fall back to the canonical JPYC (電子決済手段) domain values if not provided.
   const jpycDomain = {
     name: extra?.name ?? "JPY Coin",
     version: extra?.version ?? "1",
