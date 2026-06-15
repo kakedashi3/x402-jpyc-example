@@ -212,7 +212,7 @@ app.get("/api/premium", async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// 上流転送ハンドラ (jojo Day1 デモ / knowledge jojo.md §10-①)
+// 上流転送ハンドラ (yoyo Day1 デモ / knowledge yoyo.md §10-①)
 // 無料の Polymarket Gamma API を 402 ゲートして転送する。
 // 原価ゼロ・粗利 100% (blockrun §7)。quote は税抜/税額を jp402 拡張で明示。
 // ─────────────────────────────────────────────────────────────
@@ -266,7 +266,7 @@ async function forwardJson(res: Response, upstream: URL): Promise<void> {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 多 endpoint 化 (jojo Phase G / knowledge jojo.md §14、blockrun §7)
+// 多 endpoint 化 (yoyo Phase G / knowledge yoyo.md §14、blockrun §7)
 // 選定基準: 無料 API 優先 (原価ゼロ・粗利 100%)・read 系のみ・上流データの権利クリーン度。
 // ─────────────────────────────────────────────────────────────
 
@@ -328,11 +328,11 @@ app.get("/api/defi", async (req, res) => {
   }
 });
 
-// /api/catalog — 無料の品書き。買い手 agent (jojo 等) が品揃えと価格を発見する用。
-// 正式な discovery は jp402-registry 登録 (jojo Phase D) でこの簡易版を置き換える
+// /api/catalog — 無料の品書き。買い手 agent (yoyo 等) が品揃えと価格を発見する用。
+// 正式な discovery は jp402-registry 登録 (yoyo Phase D) でこの簡易版を置き換える
 app.get("/api/catalog", (_req, res) => {
   res.json({
-    seller: "x402-jpyc-example (jojo demo)",
+    seller: "x402-jpyc-example (yoyo demo)",
     currency: "JPYC",
     network: "eip155:137",
     resources: [
