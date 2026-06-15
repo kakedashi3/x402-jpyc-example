@@ -1,6 +1,9 @@
 import { config } from "dotenv";
 import express from "express";
 import type { Request, Response } from "express";
+import { readFileSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 config({ path: "../.env" });
 
 const X402_FACILITATOR_URL = process.env.X402_FACILITATOR_URL;
@@ -328,6 +331,31 @@ app.get("/api/defi", async (req, res) => {
   }
 });
 
+// /api/reports/:id — yoyo の受託レポート販売 (F-1 sell endpoint・demo-grade)
+// 税込 55 JPYC = 税抜 50 + 消費税 5 (10%)。納品=入金の原子性: 払うまで全文は出ない。
+// ※demo は買い手 yoyo が自分のレポートを買う self-loop。payTo は facilitator 設定の
+//   共用 wallet で、収益専用 wallet (W-H) への分離は product-grade の精緻化。
+const REPORT_AMOUNT = "55000000000000000000";
+const REPORT_TAX = { excl_jpyc: "50", vat_jpyc: "5", rate: 0.1 };
+const REPORTS_DIR = join(homedir(), ".yen402", "reports");
+
+app.get("/api/reports/:id", async (req, res) => {
+  const id = String(req.params.id).replace(/[^A-Za-z0-9_-]/g, ""); // path traversal 防止
+  const file = join(REPORTS_DIR, `${id}.html`);
+  if (!existsSync(file)) {
+    res.status(404).json({ error: `report ${id} not found` });
+    return;
+  }
+  const paid = await collectPayment(req, res, {
+    amount: REPORT_AMOUNT,
+    jp402: { tax: REPORT_TAX, deliverable: `受託レポート ${id}` },
+  });
+  if (!paid) return;
+  console.log(`[sell] report ${id} delivered (paid 55 JPYC)`);
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.status(200).send(readFileSync(file, "utf8"));
+});
+
 // /api/catalog — 無料の品書き。買い手 agent (yoyo 等) が品揃えと価格を発見する用。
 // 正式な discovery は jp402-registry 登録 (yoyo Phase D) でこの簡易版を置き換える
 app.get("/api/catalog", (_req, res) => {
@@ -351,7 +379,7 @@ fetchPaymentInfo()
     app.listen(PORT, () => {
       console.log(`Server listening at http://localhost:${PORT}`);
       console.log(`Facilitator: ${X402_FACILITATOR_URL}`);
-      console.log(`Paid routes: /api/premium (1 JPYC), /api/markets (11 JPYC 税込), /api/fx (5.5 JPYC 税込), /api/defi (11 JPYC 税込)`);
+      console.log(`Paid routes: /api/premium (1 JPYC), /api/markets (11 JPYC 税込), /api/fx (5.5 JPYC 税込), /api/defi (11 JPYC 税込), /api/reports/:id (55 JPYC 税込・売り手)`);
       console.log(`Free routes: /api/catalog (品書き)`);
     });
   })
